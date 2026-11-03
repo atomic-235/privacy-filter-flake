@@ -16,6 +16,8 @@ const CACHE =
   path.join(process.env.XDG_CACHE_HOME ?? path.join(process.env.HOME ?? ".", ".cache"), "privacy-filter")
 const THREADS = Number(process.env.PRIVACY_FILTER_THREADS ?? Math.min(8, os.cpus().length))
 const MAX_TOKENS = Number(process.env.PRIVACY_FILTER_MAX_TOKENS ?? 2048)
+const IDLE_MS = Number(process.env.PRIVACY_FILTER_IDLE_MS ?? 120_000)
+const REQUEST_TIMEOUT_MS = Number(process.env.PRIVACY_FILTER_REQUEST_TIMEOUT_MS ?? 30_000)
 const OVERLAP = 128
 const MAX_BODY = 16 * 1024 * 1024
 const MAX_TEXTS = 2000
@@ -34,6 +36,8 @@ let tokenizer = null
 let session = null
 let id2label = null
 let queue = Promise.resolve()
+let inFlight = false
+let lastUsed = Date.now()
 
 async function download(name, remote) {
   const target = path.join(CACHE, name)
@@ -210,6 +214,8 @@ function applySpans(text, spans) {
 }
 
 async function redact(texts) {
+  if (!session) await load()
+  lastUsed = Date.now()
   const document = texts.join(SEPARATOR)
   const spans = await spansFor(document)
   const out = []
@@ -232,6 +238,25 @@ function exclusive(task) {
     () => undefined,
   )
   return result
+}
+
+function withWatchdog(task, ms = REQUEST_TIMEOUT_MS) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      console.error("privacy-filter: request timed out, exiting for restart")
+      process.exit(1)
+    }, ms)
+    task().then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      (error) => {
+        clearTimeout(timer)
+        reject(error)
+      },
+    )
+  })
 }
 
 function send(response, status, payload) {
@@ -272,9 +297,14 @@ const server = http.createServer((request, response) => {
       return
     }
     try {
-      const redacted = await exclusive(() => redact(texts))
+      inFlight = true
+      const redacted = await exclusive(() => withWatchdog(() => redact(texts)))
+      inFlight = false
+      lastUsed = Date.now()
       send(response, 200, { redacted })
     } catch (error) {
+      inFlight = false
+      lastUsed = Date.now()
       console.error(`privacy-filter: redaction failed: ${error}`)
       send(response, 500, { error: String(error) })
     }
@@ -288,3 +318,19 @@ server.listen(PORT, HOST, () => {
     await redact(["warmup"])
   }).catch((error) => console.error(`privacy-filter: model load failed: ${error}`))
 })
+
+// Release the ONNX session when idle so the ORT thread pool cannot keep the
+// CPU busy between requests. The next request reloads from the local cache.
+setInterval(async () => {
+  if (!session || inFlight) return
+  if (Date.now() - lastUsed < IDLE_MS) return
+  const current = session
+  session = null
+  ready = false
+  try {
+    await current.release()
+  } catch (error) {
+    console.error(`privacy-filter: session release failed: ${error}`)
+  }
+  console.error("privacy-filter: idle, session released")
+}, Math.max(1_000, Math.min(15_000, IDLE_MS / 4))).unref()
