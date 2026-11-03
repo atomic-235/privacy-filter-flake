@@ -1,0 +1,8 @@
+{
+  "opfRev": "f7f00ca7fb869683eb732c010299d901457f19c3",
+  "opfHash": "sha256-vSzLV4W9YecPsIBrgtahePF1yCDHaapjT8YdDf4WIas=",
+  "model": {
+    "repo": "openai/privacy-filter",
+    "revision": "7ffa9a043d54d1be65afb281eddf0ffbe629385b"
+  }
+}

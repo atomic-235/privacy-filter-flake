@@ -1,0 +1,90 @@
+name: Release
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Rebuild even if the pinned opf/model revisions match"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31
+
+      - name: Resolve upstream revisions
+        id: upstream
+        run: |
+          opf_rev="$(curl -fsSL https://api.github.com/repos/openai/privacy-filter/commits/main | jq -r .sha)"
+          model_rev="$(curl -fsSL https://huggingface.co/api/models/openai/privacy-filter | jq -r .sha)"
+          echo "opf=${opf_rev}" >> "$GITHUB_OUTPUT"
+          echo "model=${model_rev}" >> "$GITHUB_OUTPUT"
+
+      - name: Compare with pinned revisions
+        id: check
+        run: |
+          current_opf="$(jq -r .opfRev version.json)"
+          current_model="$(jq -r .model.revision version.json)"
+          if [ "$current_opf" = "${{ steps.upstream.outputs.opf }}" ] \
+             && [ "$current_model" = "${{ steps.upstream.outputs.model }}" ] \
+             && [ "${{ inputs.force }}" != "true" ]; then
+            echo "new=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "new=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Update version.json and build
+        if: steps.check.outputs.new == 'true'
+        env:
+          OPF_REV: ${{ steps.upstream.outputs.opf }}
+          MODEL_REV: ${{ steps.upstream.outputs.model }}
+        run: |
+          src_hash="$(nix store prefetch-file --json --unpack \
+            "https://github.com/openai/privacy-filter/archive/${OPF_REV}.tar.gz" | jq -r .hash)"
+          jq --arg o "$OPF_REV" --arg h "$src_hash" --arg m "$MODEL_REV" \
+            '.opfRev = $o | .opfHash = $h | .model.revision = $m' \
+            version.json > version.json.tmp
+          mv version.json.tmp version.json
+
+          nix build --no-link '.#privacy-filter'
+
+      - name: Commit and tag
+        if: steps.check.outputs.new == 'true'
+        env:
+          OPF_REV: ${{ steps.upstream.outputs.opf }}
+          MODEL_REV: ${{ steps.upstream.outputs.model }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="v$(echo "$OPF_REV" | cut -c1-7)-$(echo "$MODEL_REV" | cut -c1-7)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git add version.json flake.lock
+          if ! git diff --cached --quiet; then
+            git commit -m "release: opf ${OPF_REV:0:7} (model ${MODEL_REV:0:7})"
+            git push origin HEAD:main
+          fi
+          git tag -f "$tag"
+          git tag -f latest
+          git push --force origin "$tag" latest
+
+      - name: Open issue on failure
+        if: failure()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue create \
+            --title "release build failed" \
+            --body "The release build failed. Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
