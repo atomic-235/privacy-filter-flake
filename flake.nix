@@ -1,5 +1,5 @@
 {
-  description = "OpenAI Privacy Filter as a local redaction service";
+  description = "OpenAI Privacy Filter as a local redaction service (ONNX q4)";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -17,21 +17,16 @@
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-          opf = pkgs.callPackage ./opf.nix { };
-          service = pkgs.callPackage ./package.nix { inherit opf; };
+          service = pkgs.callPackage ./package.nix { };
         in
         rec {
           default = service;
-          inherit opf;
           privacy-filter = service;
         }
       );
 
       overlays.default = final: _prev: {
-        opf = final.callPackage ./opf.nix { };
-        privacy-filter = final.callPackage ./package.nix {
-          opf = final.callPackage ./opf.nix { };
-        };
+        privacy-filter = final.callPackage ./package.nix { };
       };
     };
 }
