@@ -315,7 +315,7 @@ server.listen(PORT, HOST, () => {
   console.error(`privacy-filter: listening on ${HOST}:${PORT}`)
   exclusive(async () => {
     await load()
-    await redact(["warmup"])
+    await withWatchdog(() => redact(["warmup"]), 60_000)
   }).catch((error) => console.error(`privacy-filter: model load failed: ${error}`))
 })
 
