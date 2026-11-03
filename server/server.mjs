@@ -25,6 +25,7 @@ const FILES = {
   "model_q4.onnx": "onnx/model_q4.onnx",
   "model_q4.onnx_data": "onnx/model_q4.onnx_data",
   "tokenizer.json": "tokenizer.json",
+  "tokenizer_config.json": "tokenizer_config.json",
   "config.json": "config.json",
 }
 
